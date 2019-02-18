@@ -66,7 +66,9 @@ namespace Agens.Stickers
         private static readonly GUIContent PixelSize = new GUIContent("Pixel Size");
         private static readonly GUIContent SizeOnDisk = new GUIContent("Size on disk");
         private static readonly GUIContent AppStoreIcon = new GUIContent("App Store Icon");
-        private static readonly GUIContent AppStoreIconSize = new GUIContent("1024 x 768");
+        private static readonly GUIContent AppStoreIconSize = new GUIContent("1024 x 1024");
+        private static readonly GUIContent MessagesAppStoreIcon = new GUIContent("Messages App Store Icon");
+        private static readonly GUIContent MessagesAppStoreIconSize = new GUIContent("1024 x 768");
         private static readonly GUIContent LoadFromFolder = new GUIContent("Load from Folder");
 
         private readonly Dictionary<Sticker, long> diskSizes = new Dictionary<Sticker, long>();
@@ -100,6 +102,7 @@ namespace Agens.Stickers
             iconProperties = new[]
             {
                 icons.FindPropertyRelative("appStore"),
+                icons.FindPropertyRelative("messagesAppStore"),
                 icons.FindPropertyRelative("messagesiPadPro2"),
                 icons.FindPropertyRelative("messagesiPad2"),
                 icons.FindPropertyRelative("messagesiPhone2"),
@@ -116,6 +119,7 @@ namespace Agens.Stickers
             iconTextureLabels = new[]
             {
                 new GUIContent("AppStore"),
+                new GUIContent("MessagesAppStore"),
                 new GUIContent("Messages iPad Pro @2x"),
                 new GUIContent("Messages iPad @2x"),
                 new GUIContent("Messages iPhone @2x"),
@@ -250,7 +254,8 @@ namespace Agens.Stickers
             {
                 EditorPrefs.SetString("Stickers.ImportFolder", folder);
 
-                var files = Directory.GetFiles(folder, "*.png", SearchOption.TopDirectoryOnly);
+                var files = Directory.GetFiles(folder, "*.*", SearchOption.TopDirectoryOnly)
+                    .Where(StickerEditorUtility.HasValidFileExtension).ToArray();
                 foreach (var file in files)
                 {
                     var sticker = OnAddCallback(false);
@@ -279,7 +284,8 @@ namespace Agens.Stickers
                     sticker.name = dirInfo.Name;
                     sticker.Name = dirInfo.Name;
 
-                    files = Directory.GetFiles(directory, "*.png", SearchOption.TopDirectoryOnly);
+                    files = Directory.GetFiles(directory, "*.*", SearchOption.TopDirectoryOnly)
+                    .Where(StickerEditorUtility.HasValidFileExtension).ToArray();
                     for (var index = 0; index < files.Length; index++)
                     {
                         var file = files[index];
@@ -478,13 +484,13 @@ namespace Agens.Stickers
                 var sequenceRect = new Rect(rect);
                 sequenceRect.y += ButtonHeight + 2;
                 sequenceRect.height = ButtonHeight;
-                sequenceRect.width -= 150;
+                sequenceRect.width = EditorGUIUtility.labelWidth + 20f;
                 EditorGUI.PropertyField(sequenceRect, sequence);
 
                 EditorGUI.BeginDisabledGroup(!sequence.boolValue);
                 var buttonRect = new Rect(rect);
                 buttonRect.y += ButtonHeight;
-                buttonRect.xMin = EditorGUIUtility.labelWidth + 50;
+                buttonRect.xMin =sequenceRect.xMax;
                 buttonRect.height = ButtonHeight;
                 if (GUI.Button(buttonRect, LoadFromFolder))
                 {
@@ -558,7 +564,7 @@ namespace Agens.Stickers
 
         private static bool DrawTexture(SerializedProperty sequence, Rect firstFrameRect, SerializedProperty frames, SerializedProperty fps, Texture2D firstFrameTexture, SerializedProperty firstFrame, SerializedProperty stickerName, SerializedObject sticker, ref bool updateIndexes)
         {
-            if (sequence.boolValue)
+            if (sequence.boolValue && frames.arraySize > 1)
             {
                 GUI.Box(firstFrameRect, GUIContent.none);
                 var frameIndex = StickerEditor.AnimatedIndex(frames, fps);
@@ -580,12 +586,21 @@ namespace Agens.Stickers
                 var texture = EditorGUI.ObjectField(firstFrameRect, firstFrame.objectReferenceValue as Texture2D, typeof(Texture2D), false);
                 if (EditorGUI.EndChangeCheck())
                 {
-					firstFrame.objectReferenceValue = texture;
-					if (texture != null) {
-						stickerName.stringValue = texture.name;
-						sticker.targetObject.name = texture.name;
-						updateIndexes = true;
-					}
+                    firstFrame.objectReferenceValue = texture;
+                    if (texture != null) {
+                        stickerName.stringValue = texture.name;
+                        sticker.targetObject.name = texture.name;
+                        updateIndexes = true;
+
+                        if (sequence.boolValue != true)
+                        {
+                            var propertyPath = AssetDatabase.GetAssetPath(firstFrame.objectReferenceInstanceIDValue);
+                            if (StickerEditorUtility.IsAnimatedTexture(propertyPath))
+                            {
+                                sequence.boolValue = true;
+                            }
+                        }
+                    }
                 }
             }
             return false;
@@ -596,13 +611,13 @@ namespace Agens.Stickers
             var id = GUIUtility.GetControlID(SizeOnDisk, FocusType.Passive);
             var helpRect2 = EditorGUI.PrefixLabel(fieldRect, id, SizeOnDisk);
             var sizeOnDisk = GetFileSize(stickerAsset.objectReferenceValue as Sticker);
-            if (sizeOnDisk <= 500000)
+            if (sizeOnDisk <= 500000L)
             {
-                EditorGUI.HelpBox(helpRect2, GetFileSizeInKB(sizeOnDisk), MessageType.None);
+                EditorGUI.HelpBox(helpRect2, StickerEditorUtility.GetFileSizeString(sizeOnDisk), MessageType.None);
             }
             else
             {
-                EditorGUI.HelpBox(helpRect2, GetFileSizeInKB(sizeOnDisk) + " is too large", MessageType.Warning);
+                EditorGUI.HelpBox(helpRect2, StickerEditorUtility.GetFileSizeString(sizeOnDisk) + " is too large", MessageType.Warning);
             }
         }
 
@@ -641,17 +656,7 @@ namespace Agens.Stickers
             repaintMethod.Invoke(guiView, null);
         }
 
-        public static string GetFileSizeInKB(long size)
-        {
-            if (size < 1000)
-            {
-                return size + "B";
-            }
-            else
-            {
-                return (size / 1000) + " KB";
-            }
-        }
+        
 
         private long GetFileSize(Sticker sticker)
         {
@@ -671,16 +676,20 @@ namespace Agens.Stickers
             for (int index = 0; index < sticker.Frames.Count; index++)
             {
                 var stickerTexture = sticker.Frames[index];
+                if (stickerTexture == null)
+                {
+                    continue;
+                }
                 var postPath = AssetDatabase.GetAssetPath(stickerTexture);
                 var projectPath = Application.dataPath;
                 var filePath = projectPath.Replace("Assets", string.Empty) + postPath;
                 var info = new FileInfo(filePath);
-				try{
-                	size += info.Length;
-				} catch(FileNotFoundException e) {
-					Debug.LogWarning ("Filepath: " + filePath + " is not valid. Please check sticker is not null or exists on disk.");
-					Debug.LogWarning ("Catching: " + e);
-				}
+                try{
+                    size += info.Length;
+                } catch(FileNotFoundException e) {
+                    Debug.LogWarning ("Filepath: " + filePath + " is not valid. Please check sticker is not null or exists on disk.");
+                    Debug.LogWarning ("Catching: " + e);
+                }
             }
             return size;
         }
@@ -784,6 +793,15 @@ namespace Agens.Stickers
             iconProperties[0].objectReferenceValue = (Texture2D) EditorGUILayout.ObjectField(iconProperties[0].objectReferenceValue, typeof (Texture2D), false, GUILayout.Height(75) , GUILayout.Width(75));
             EditorGUILayout.EndHorizontal();
 
+            EditorGUILayout.BeginHorizontal();
+            EditorGUILayout.BeginVertical();
+            EditorGUILayout.LabelField(MessagesAppStoreIcon, boldLabelStyle);
+            EditorGUILayout.LabelField(MessagesAppStoreIconSize);
+            EditorGUILayout.EndVertical();
+
+            EditorGUI.BeginChangeCheck();
+            iconProperties[1].objectReferenceValue = (Texture2D)EditorGUILayout.ObjectField(iconProperties[1].objectReferenceValue, typeof(Texture2D), false, GUILayout.Height(75), GUILayout.Width(75));
+            EditorGUILayout.EndHorizontal();
 
             EditorGUILayout.Space();
             EditorGUILayout.BeginHorizontal();
@@ -813,7 +831,7 @@ namespace Agens.Stickers
 
             DrawOverride();
 
-            for (int i = 1; i < iconProperties.Length; i++)
+            for (int i = 2; i < iconProperties.Length; i++)
             {
                 DrawIcons(i);
             }
@@ -851,7 +869,8 @@ namespace Agens.Stickers
         private void LoadIconsFromFolder()
         {
             var folder = EditorUtility.OpenFolderPanel("Select Sticker Icon Folder", string.Empty, string.Empty);
-            var files = Directory.GetFiles(folder, "*.png", SearchOption.TopDirectoryOnly).ToList();
+            var files = Directory.GetFiles(folder, "*.*", SearchOption.TopDirectoryOnly)
+                .Where(StickerEditorUtility.HasValidFileExtension).ToList();
             files.Sort();
 
             overrideIcon.boolValue = true;
